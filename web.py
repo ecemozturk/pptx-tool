@@ -66,7 +66,7 @@ button:disabled{opacity:.65;cursor:wait}
   <select name="format"><option value="legacy">Learning Center</option><option value="standard">Standard</option></select>
 </label>
 <label>PNG resolution
-  <select name="dpi"><option value="144">144 DPI (recommended)</option><option value="192">192 DPI (larger)</option><option value="96">96 DPI (smaller)</option></select>
+  <select name="dpi"><option value="96">96 DPI</option></select>
 </label>
 <label>Image width
   <select name="image_width"><option value="607">607 px (original size)</option><option value="480">480 px</option><option value="720">720 px</option></select>
@@ -176,7 +176,7 @@ def home():
 
 
 @app.post("/convert")
-def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(144),
+def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(96),
                        new_tab: bool = Form(False), format: str = Form("legacy"),
                        image_width: int = Form(607), slide_font: str = Form("georgia"),
                        body_font_size: int = Form(17), create_index: bool = Form(False)):
@@ -184,7 +184,7 @@ def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(144),
         raise HTTPException(400, "Please upload a .pptx file")
     if format not in ("legacy", "standard"):
         raise HTTPException(400, "Invalid output format")
-    if dpi not in (96, 144, 192):
+    if dpi != 96:
         raise HTTPException(400, "Invalid resolution")
     if image_width not in (480, 607, 720) or slide_font not in ("arial", "georgia", "times", "verdana") or body_font_size not in (14, 17, 20):
         raise HTTPException(400, "Invalid display setting")
