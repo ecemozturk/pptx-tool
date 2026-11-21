@@ -8,12 +8,14 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
 
 from converter import convert
 
 app = FastAPI(title="PPTX to HTML")
+app.add_middleware(CORSMiddleware, allow_origins=["https://ecemozturk.github.io"], allow_methods=["POST"])
 conversion_lock = threading.Lock()
 MAX_UPLOAD = 50 * 1024 * 1024
 MAX_UNCOMPRESSED = 250 * 1024 * 1024
@@ -52,7 +54,7 @@ button:disabled{opacity:.65;cursor:wait}
 </style>
 <main>
 <h1>PowerPoint to HTML</h1>
-<p>Convert slides and speaker notes into HTML pages and PNGs in one ZIP.</p>
+<p>Convert Bryan Ventures PowerPoint course materials into web pages and matching PNG images.</p>
 <form id="form" action="/convert" method="post" enctype="multipart/form-data">
 <label class="drop" id="drop">
   <strong>Drop a PowerPoint file here</strong>
@@ -72,8 +74,8 @@ button:disabled{opacity:.65;cursor:wait}
 <label>Slide text font
   <select name="slide_font"><option value="georgia">Georgia</option><option value="arial">Arial</option><option value="times">Times New Roman</option><option value="verdana">Verdana</option></select>
 </label>
-<label>Notes / body font
-  <select name="body_font"><option value="arial">Arial</option><option value="georgia">Georgia</option><option value="times">Times New Roman</option><option value="verdana">Verdana</option></select>
+<label>Body font size
+  <select name="body_font_size"><option value="14">14 px</option><option value="17" selected>17 px</option><option value="20">20 px</option></select>
 </label>
 </div>
 <label class="check"><input type="checkbox" name="new_tab" value="true" checked> Open links in a new tab</label>
@@ -177,14 +179,14 @@ def home():
 def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(144),
                        new_tab: bool = Form(False), format: str = Form("legacy"),
                        image_width: int = Form(607), slide_font: str = Form("georgia"),
-                       body_font: str = Form("arial"), create_index: bool = Form(False)):
+                       body_font_size: int = Form(17), create_index: bool = Form(False)):
     if not file.filename or Path(file.filename).suffix.lower() != ".pptx":
         raise HTTPException(400, "Please upload a .pptx file")
     if format not in ("legacy", "standard"):
         raise HTTPException(400, "Invalid output format")
     if dpi not in (96, 144, 192):
         raise HTTPException(400, "Invalid resolution")
-    if image_width not in (480, 607, 720) or slide_font not in ("arial", "georgia", "times", "verdana") or body_font not in ("arial", "georgia", "times", "verdana"):
+    if image_width not in (480, 607, 720) or slide_font not in ("arial", "georgia", "times", "verdana") or body_font_size not in (14, 17, 20):
         raise HTTPException(400, "Invalid display setting")
     if not conversion_lock.acquire(blocking=False):
         raise HTTPException(503, "Another conversion is running. Please retry shortly")
@@ -209,7 +211,7 @@ def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(144),
                 raise HTTPException(400, "The file is not a valid PPTX")
         output_dir = temp / "output"
         convert(source, output_dir, dpi=dpi, new_tab=new_tab, legacy=format == "legacy",
-                image_width=image_width, slide_font=slide_font, body_font=body_font,
+                image_width=image_width, slide_font=slide_font, body_font_size=body_font_size,
                 create_index=create_index)
         bundle = temp / "converted.zip"
         with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:

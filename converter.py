@@ -163,13 +163,13 @@ def _slide_text_layer(page):
 
 def convert(source: Path, destination: Path, *, dpi: int = 144, new_tab: bool = True,
             legacy: bool = False, image_width: int = 607, slide_font: str = "georgia",
-            body_font: str = "arial", create_index: bool = False):
+            body_font_size: int = 17, create_index: bool = False):
     source = source.resolve()
     if source.suffix.lower() != ".pptx" or not source.is_file():
         raise ValueError("Input must be an existing .pptx file")
     if not 72 <= dpi <= 300:
         raise ValueError("DPI must be between 72 and 300")
-    if image_width not in (480, 607, 720) or slide_font not in FONTS or body_font not in FONTS:
+    if image_width not in (480, 607, 720) or slide_font not in FONTS or body_font_size not in (14, 17, 20):
         raise ValueError("Invalid display setting")
     office = shutil.which("libreoffice") or shutil.which("soffice")
     if not office:
@@ -207,10 +207,10 @@ def convert(source: Path, destination: Path, *, dpi: int = 144, new_tab: bool = 
                              f'{text_layer}{links}</div><div class="notes">{_notes_html(notes, new_tab)}</div></article>')
     if legacy:
         style = STYLE + (
-            f'body{{font-family:{FONTS[body_font]};max-width:{max(745, image_width+40)}px;margin:29px auto;padding:0 13px}}'
+            f'body{{font-family:Arial,sans-serif;font-size:{body_font_size}px;max-width:{max(745, image_width+40)}px;margin:29px auto;padding:0 13px}}'
             f'.slide{{container-type:inline-size;width:min({image_width}px,100%);margin:auto}}'
             f'.slide span{{position:absolute;white-space:pre;transform:translateY(-.8em);font-family:{FONTS[slide_font]}!important}}'
-            f'.notes{{font:17px/20px {FONTS[body_font]};margin-top:30px}}'
+            f'.notes{{font-size:{body_font_size}px;line-height:1.3;margin-top:30px}}'
         )
         for index, body in enumerate(pages, 1):
             title = html.escape(source.stem)
@@ -236,7 +236,7 @@ def convert(source: Path, destination: Path, *, dpi: int = 144, new_tab: bool = 
     head = (f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>{title}</title><style>{STYLE}'
-            f'body{{font-family:{FONTS[body_font]};max-width:{max(745, image_width+40)}px}}'
+            f'body{{font-family:Arial,sans-serif;font-size:{body_font_size}px;max-width:{max(745, image_width+40)}px}}'
             f'.slide{{width:min({image_width}px,100%);margin:auto}}'
             f'</style></head><body>')
     for index, page in enumerate(pages, 1):

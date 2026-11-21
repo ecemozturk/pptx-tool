@@ -32,7 +32,7 @@ button:disabled{opacity:.65;cursor:wait}
 </style>
 <main>
 <h1>PowerPoint to HTML</h1>
-<p>Convert slides and speaker notes into HTML pages and PNGs in one ZIP.</p>
+<p>Convert Bryan Ventures PowerPoint course materials into web pages and matching PNG images.</p>
 <form id="form" action="/convert" method="post" enctype="multipart/form-data">
 <label class="drop" id="drop">
   <strong>Drop a PowerPoint file here</strong>
@@ -52,8 +52,8 @@ button:disabled{opacity:.65;cursor:wait}
 <label>Slide text font
   <select name="slide_font"><option value="georgia">Georgia</option><option value="arial">Arial</option><option value="times">Times New Roman</option><option value="verdana">Verdana</option></select>
 </label>
-<label>Notes / body font
-  <select name="body_font"><option value="arial">Arial</option><option value="georgia">Georgia</option><option value="times">Times New Roman</option><option value="verdana">Verdana</option></select>
+<label>Body font size
+  <select name="body_font_size"><option value="14">14 px</option><option value="17" selected>17 px</option><option value="20">20 px</option></select>
 </label>
 </div>
 <label class="check"><input type="checkbox" name="new_tab" value="true" checked> Open links in a new tab</label>
