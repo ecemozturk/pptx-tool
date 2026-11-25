@@ -23,6 +23,7 @@ select{width:100%;margin-top:6px;padding:10px;background:#fff;border:1px solid #
 input[type=checkbox]{accent-color:#136549;width:17px;height:17px}
 button,.download{display:inline-block;padding:12px 18px;border:0;border-radius:9px;background:#126449;color:white;font:inherit;font-weight:650;cursor:pointer}
 button:disabled{opacity:.65;cursor:wait}
+progress{width:100%;height:12px;margin-top:12px;accent-color:#126449}
 .download{color:#12573f;background:#e7f4ed}
 [hidden]{display:none!important}
 #status{margin:12px 0 0}
@@ -36,7 +37,7 @@ button:disabled{opacity:.65;cursor:wait}
 <form id="form" action="/convert" method="post" enctype="multipart/form-data">
 <label class="drop" id="drop">
   <strong>Drop a PowerPoint file here</strong>
-  <small>Or select a .pptx file up to 50 MB.</small>
+  <small>Or select a .pptx file up to 200 MB.</small>
   <input id="file" required type="file" name="file" accept=".pptx" aria-label="Choose a PowerPoint file">
 </label>
 <div class="settings">
@@ -59,6 +60,7 @@ button:disabled{opacity:.65;cursor:wait}
 <label class="check"><input type="checkbox" name="new_tab" value="true" checked> Open links in a new tab</label>
 <label class="check"><input type="checkbox" name="create_index" value="true"> Create an index page with links to every slide</label>
 <button type="submit">Convert PowerPoint</button>
+<progress id="progress" hidden max="100"></progress>
 <p id="status" role="status"></p>
 <a id="download" class="download" hidden>Download ZIP</a>
 </form>
@@ -70,12 +72,20 @@ const file = document.querySelector('#file');
 const drop = document.querySelector('#drop');
 const button = form.querySelector('button');
 const statusNode = document.querySelector('#status');
+const progressNode = document.querySelector('#progress');
 const download = document.querySelector('#download');
 let downloadUrl;
 
 function showStatus(message, error = false) {
   statusNode.textContent = message;
   statusNode.dataset.error = error;
+}
+
+function showProgress(message, percent) {
+  progressNode.hidden = false;
+  if (percent == null) progressNode.removeAttribute('value');
+  else progressNode.value = percent;
+  showStatus(message);
 }
 
 function clearDownload() {
@@ -89,7 +99,7 @@ function validateFile() {
   const selected = file.files[0];
   let error = '';
   if (selected && !/\.pptx$/i.test(selected.name)) error = 'Choose a .pptx file.';
-  if (selected && selected.size > 50 * 1024 * 1024) error = 'Choose a file under 50 MB.';
+  if (selected && selected.size > 200 * 1024 * 1024) error = 'Choose a file under 200 MB.';
   file.setCustomValidity(error);
   showStatus(error || (selected ? 'Selected: ' + selected.name : ''), Boolean(error));
   return Boolean(selected && !error);
@@ -117,6 +127,34 @@ drop.addEventListener('drop', event => {
   validateFile();
 });
 
+async function uploadInChunks(selected, apiBase) {
+  const start = await fetch(new URL('/uploads', apiBase), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: selected.name, size: selected.size})
+  });
+  if (!start.ok) throw new Error((await start.json()).detail || 'Could not start the upload.');
+  const {upload} = await start.json();
+  const chunkSize = 8 * 1024 * 1024;
+  try {
+    for (let offset = 0; offset < selected.size; offset += chunkSize) {
+      const part = selected.slice(offset, offset + chunkSize);
+      const response = await fetch(new URL('/uploads/' + upload + '?offset=' + offset, apiBase), {
+        method: 'PUT', body: part
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Upload failed.');
+      }
+      showProgress('Uploading: ' + Math.round(100 * Math.min(offset + part.size, selected.size) / selected.size) + '%',
+                   100 * Math.min(offset + part.size, selected.size) / selected.size);
+    }
+    return upload;
+  } catch (error) {
+    await fetch(new URL('/uploads/' + upload, apiBase), {method: 'DELETE'}).catch(() => {});
+    throw error;
+  }
+}
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
   if (button.disabled || !validateFile()) return;
@@ -125,12 +163,17 @@ form.addEventListener('submit', async event => {
     showStatus('The conversion server has not been configured yet.', true);
     return;
   }
+  const selected = file.files[0];
   const body = new FormData(form);
+  body.delete('file');
   const name = file.files[0].name.replace(/\.pptx$/i, '');
   button.disabled = true;
   file.disabled = true;
-  showStatus('Converting slides and notes…');
+  showProgress('Uploading: 0%', 0);
   try {
+    const upload = await uploadInChunks(selected, window.PPTX_API_BASE);
+    body.set('upload', upload);
+    showProgress('Converting slides and notes…', null);
     const response = await fetch(new URL('/convert', window.PPTX_API_BASE), {method: 'POST', body});
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -140,8 +183,10 @@ form.addEventListener('submit', async event => {
     download.href = downloadUrl;
     download.download = name + '-html.zip';
     download.hidden = false;
+    progressNode.hidden = true;
     showStatus('Your ZIP is ready.');
   } catch (error) {
+    progressNode.hidden = true;
     showStatus(error.message, true);
   } finally {
     button.disabled = false;

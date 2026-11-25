@@ -5,9 +5,11 @@ import tempfile
 import threading
 import zipfile
 import re
+import time
+import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
@@ -15,10 +17,14 @@ from starlette.background import BackgroundTask
 from converter import convert
 
 app = FastAPI(title="PPTX to HTML")
-app.add_middleware(CORSMiddleware, allow_origins=["https://ecemozturk.github.io"], allow_methods=["POST"])
+app.add_middleware(CORSMiddleware, allow_origins=["https://ecemozturk.github.io"], allow_methods=["POST", "PUT", "DELETE"])
 conversion_lock = threading.Lock()
-MAX_UPLOAD = 50 * 1024 * 1024
-MAX_UNCOMPRESSED = 250 * 1024 * 1024
+uploads_lock = threading.Lock()
+uploads = {}
+MAX_UPLOAD = 200 * 1024 * 1024
+CHUNK_SIZE = 8 * 1024 * 1024
+MAX_UNCOMPRESSED = 1024 * 1024 * 1024
+UPLOAD_TTL = 60 * 60
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -45,6 +51,7 @@ select{width:100%;margin-top:6px;padding:10px;background:#fff;border:1px solid #
 input[type=checkbox]{accent-color:#136549;width:17px;height:17px}
 button,.download{display:inline-block;padding:12px 18px;border:0;border-radius:9px;background:#126449;color:white;font:inherit;font-weight:650;cursor:pointer}
 button:disabled{opacity:.65;cursor:wait}
+progress{width:100%;height:12px;margin-top:12px;accent-color:#126449}
 .download{color:#12573f;background:#e7f4ed}
 [hidden]{display:none!important}
 #status{margin:12px 0 0}
@@ -58,7 +65,7 @@ button:disabled{opacity:.65;cursor:wait}
 <form id="form" action="/convert" method="post" enctype="multipart/form-data">
 <label class="drop" id="drop">
   <strong>Drop a PowerPoint file here</strong>
-  <small>Or select a .pptx file up to 50 MB.</small>
+  <small>Or select a .pptx file up to 200 MB.</small>
   <input id="file" required type="file" name="file" accept=".pptx" aria-label="Choose a PowerPoint file">
 </label>
 <div class="settings">
@@ -81,6 +88,7 @@ button:disabled{opacity:.65;cursor:wait}
 <label class="check"><input type="checkbox" name="new_tab" value="true" checked> Open links in a new tab</label>
 <label class="check"><input type="checkbox" name="create_index" value="true"> Create an index page with links to every slide</label>
 <button type="submit">Convert PowerPoint</button>
+<progress id="progress" hidden max="100"></progress>
 <p id="status" role="status"></p>
 <a id="download" class="download" hidden>Download ZIP</a>
 </form>
@@ -91,12 +99,20 @@ const file = document.querySelector('#file');
 const drop = document.querySelector('#drop');
 const button = form.querySelector('button');
 const statusNode = document.querySelector('#status');
+const progressNode = document.querySelector('#progress');
 const download = document.querySelector('#download');
 let downloadUrl;
 
 function showStatus(message, error = false) {
   statusNode.textContent = message;
   statusNode.dataset.error = error;
+}
+
+function showProgress(message, percent) {
+  progressNode.hidden = false;
+  if (percent == null) progressNode.removeAttribute('value');
+  else progressNode.value = percent;
+  showStatus(message);
 }
 
 function clearDownload() {
@@ -110,7 +126,7 @@ function validateFile() {
   const selected = file.files[0];
   let error = '';
   if (selected && !/\.pptx$/i.test(selected.name)) error = 'Choose a .pptx file.';
-  if (selected && selected.size > 50 * 1024 * 1024) error = 'Choose a file under 50 MB.';
+  if (selected && selected.size > 200 * 1024 * 1024) error = 'Choose a file under 200 MB.';
   file.setCustomValidity(error);
   showStatus(error || (selected ? 'Selected: ' + selected.name : ''), Boolean(error));
   return Boolean(selected && !error);
@@ -138,17 +154,50 @@ drop.addEventListener('drop', event => {
   validateFile();
 });
 
+async function uploadInChunks(selected, apiBase) {
+  const start = await fetch(new URL('/uploads', apiBase), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: selected.name, size: selected.size})
+  });
+  if (!start.ok) throw new Error((await start.json()).detail || 'Could not start the upload.');
+  const {upload} = await start.json();
+  const chunkSize = 8 * 1024 * 1024;
+  try {
+    for (let offset = 0; offset < selected.size; offset += chunkSize) {
+      const part = selected.slice(offset, offset + chunkSize);
+      const response = await fetch(new URL('/uploads/' + upload + '?offset=' + offset, apiBase), {
+        method: 'PUT', body: part
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Upload failed.');
+      }
+      showProgress('Uploading: ' + Math.round(100 * Math.min(offset + part.size, selected.size) / selected.size) + '%',
+                   100 * Math.min(offset + part.size, selected.size) / selected.size);
+    }
+    return upload;
+  } catch (error) {
+    await fetch(new URL('/uploads/' + upload, apiBase), {method: 'DELETE'}).catch(() => {});
+    throw error;
+  }
+}
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
   if (button.disabled || !validateFile()) return;
   clearDownload();
+  const selected = file.files[0];
   const body = new FormData(form);
+  body.delete('file');
   const name = file.files[0].name.replace(/\.pptx$/i, '');
   button.disabled = true;
   file.disabled = true;
-  showStatus('Converting slides and notes…');
+  showProgress('Uploading: 0%', 0);
   try {
-    const response = await fetch('/convert', {method: 'POST', body});
+    const upload = await uploadInChunks(selected, window.location.origin);
+    body.set('upload', upload);
+    showProgress('Converting slides and notes…', null);
+    const response = await fetch(new URL('/convert', window.location.origin), {method: 'POST', body});
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(typeof data.detail === 'string' ? data.detail : 'Conversion failed. Try again.');
@@ -157,8 +206,10 @@ form.addEventListener('submit', async event => {
     download.href = downloadUrl;
     download.download = name + '-html.zip';
     download.hidden = false;
+    progressNode.hidden = true;
     showStatus('Your ZIP is ready.');
   } catch (error) {
+    progressNode.hidden = true;
     showStatus(error.message, true);
   } finally {
     button.disabled = false;
@@ -175,12 +226,64 @@ def home():
     return PAGE
 
 
+def discard_upload(upload):
+    entry = uploads.pop(upload, None)
+    if entry:
+        shutil.rmtree(entry["directory"], ignore_errors=True)
+
+
+@app.post("/uploads")
+async def start_upload(request: Request):
+    data = await request.json()
+    name, size = data.get("name"), data.get("size")
+    if not isinstance(name, str) or Path(name).suffix.lower() != ".pptx":
+        raise HTTPException(400, "Please upload a .pptx file")
+    if type(size) is not int or not 0 < size <= MAX_UPLOAD:
+        raise HTTPException(413, "PPTX must be between 1 byte and 200 MB")
+    with uploads_lock:
+        for key, entry in list(uploads.items()):
+            if time.monotonic() - entry["updated"] > UPLOAD_TTL:
+                discard_upload(key)
+        upload = uuid.uuid4().hex
+        directory = Path(tempfile.mkdtemp(prefix="pptx-upload-"))
+        uploads[upload] = {"directory": directory, "name": name, "size": size,
+                           "received": 0, "updated": time.monotonic()}
+    return {"upload": upload}
+
+
+@app.put("/uploads/{upload}")
+async def append_upload(upload: str, offset: int, request: Request):
+    if int(request.headers.get("content-length", "0")) > CHUNK_SIZE:
+        raise HTTPException(413, "Upload chunk exceeds its limit")
+    content = await request.body()
+    with uploads_lock:
+        entry = uploads.get(upload)
+        if not entry:
+            raise HTTPException(404, "Upload not found or expired")
+        if offset != entry["received"]:
+            raise HTTPException(409, "Upload offset does not match")
+        if not content or len(content) > CHUNK_SIZE or offset + len(content) > entry["size"]:
+            raise HTTPException(413, "Upload chunk exceeds its limit")
+        with (entry["directory"] / "source.pptx").open("ab") as target:
+            target.write(content)
+        entry["received"] += len(content)
+        entry["updated"] = time.monotonic()
+        return {"received": entry["received"]}
+
+
+@app.delete("/uploads/{upload}")
+def cancel_upload(upload: str):
+    with uploads_lock:
+        discard_upload(upload)
+    return {"cancelled": True}
+
+
 @app.post("/convert")
-def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(96),
+def upload_and_convert(file: UploadFile | None = File(None), upload: str | None = Form(None), dpi: int = Form(96),
                        new_tab: bool = Form(False), format: str = Form("legacy"),
                        image_width: int = Form(607), slide_font: str = Form("georgia"),
                        body_font_size: int = Form(17), create_index: bool = Form(False)):
-    if not file.filename or Path(file.filename).suffix.lower() != ".pptx":
+    if not upload and (not file or not file.filename or Path(file.filename).suffix.lower() != ".pptx"):
         raise HTTPException(400, "Please upload a .pptx file")
     if format not in ("legacy", "standard"):
         raise HTTPException(400, "Invalid output format")
@@ -192,15 +295,31 @@ def upload_and_convert(file: UploadFile = File(...), dpi: int = Form(96),
         raise HTTPException(503, "Another conversion is running. Please retry shortly")
     temp = Path(tempfile.mkdtemp(prefix="pptx-to-html-"))
     try:
-        safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(file.filename).stem)[:80] or "presentation"
+        if upload:
+            with uploads_lock:
+                entry = uploads.get(upload)
+                if not entry:
+                    raise HTTPException(404, "Upload not found or expired")
+                if entry["received"] != entry["size"]:
+                    raise HTTPException(400, "Upload is incomplete")
+                uploads.pop(upload)
+            filename = entry["name"]
+            uploaded_source = entry["directory"] / "source.pptx"
+        else:
+            filename = file.filename
+        safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(filename).stem)[:80] or "presentation"
         source = temp / f"{safe_stem}.pptx"
-        with source.open("wb") as output:
-            total = 0
-            while chunk := file.file.read(1024 * 1024):
-                total += len(chunk)
-                if total > MAX_UPLOAD:
-                    raise HTTPException(413, "PPTX exceeds the 50 MB limit")
-                output.write(chunk)
+        if upload:
+            shutil.move(uploaded_source, source)
+            shutil.rmtree(entry["directory"], ignore_errors=True)
+        else:
+            with source.open("wb") as output:
+                total = 0
+                while chunk := file.file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_UPLOAD:
+                        raise HTTPException(413, "PPTX exceeds the 200 MB limit")
+                    output.write(chunk)
         if not zipfile.is_zipfile(source):
             raise HTTPException(400, "The file is not a valid PPTX")
         with zipfile.ZipFile(source) as archive:

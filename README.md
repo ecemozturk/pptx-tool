@@ -30,7 +30,7 @@ Open `http://localhost:8000`. Put these project files in a GitHub repository, th
 python converter.py presentation.pptx output-directory
 ```
 
-The web interface limits uploads to 50 MB and allows one conversion at a time. It uses LibreOffice to render slides, so output may vary with installed fonts. Compare the pages with the existing Click to Convert HTML before treating it as a replacement. The converter produces static images. Links attached to individual text runs on the slide itself are outside the current scope.
+The web interface accepts PPTX files up to 200 MB in 8 MB upload chunks, shows upload progress, and allows one conversion at a time. Incomplete uploads expire after an hour. The server must run as one process because uploads are held on local disk and tracked in process memory. It uses LibreOffice to render slides, so output may vary with installed fonts. Compare the pages with the existing Click to Convert HTML before treating it as a replacement. The converter produces static images. Links attached to individual text runs on the slide itself are outside the current scope.
 
 ## Learning Center export
 
